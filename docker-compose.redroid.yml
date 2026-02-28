@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # Redroid Android container
+  redroid:
+    image: redroid/redroid:${REDROID_VERSION:-latest}
+    container_name: redroid
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "${ADB_PORT:-5555}:5555"  # ADB port
+    volumes:
+      - redroid-data:/data
+    networks:
+      - android-net
+    command:
+      - androidboot.redroid_width=${ANDROID_WIDTH:-1080}
+      - androidboot.redroid_height=${ANDROID_HEIGHT:-2340}
+      - androidboot.redroid_dpi=${ANDROID_DPI:-420}
+      - androidboot.redroid_fps=${ANDROID_FPS:-60}
+      - androidboot.redroid_gpu_mode=guest
+    healthcheck:
+      test: ["CMD", "sh", "-c", "getprop sys.boot_completed | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ws-scrcpy streaming interface
+  ws-scrcpy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fayekelmith/ws-scrcpy:latest
+    container_name: ws-scrcpy
+    restart: unless-stopped
+    depends_on:
+      redroid:
+        condition: service_healthy
+    ports:
+      - "${SCRCPY_PORT:-8000}:8000"  # Web UI
+    volumes:
+      # Persist ADB authentication keys between restarts
+      - adb-keys:/root/.android
+      # Optional: Config file (not needed with env vars, but supported)
+      # - ./config.yaml:/app/config.yaml:ro
+    networks:
+      - android-net
+    environment:
+      # Runtime configuration (NEW!)
+      - NODE_ENV=production
+      - SCRCPY_DEVICE_HOST=redroid:5555
+      - SCRCPY_DEVICE_PORT=8886
+      # Optional: Override server port (default: 8000)
+      # - WS_SCRCPY_SERVER_PORT=8000
+    command: >
+      sh -c "
+        echo 'Waiting for redroid to boot...';
+        sleep ${BOOT_WAIT:-10};
+        adb start-server;
+        adb connect redroid:5555;
+        adb wait-for-device;
+        echo 'Device connected!';
+        npm start
+      "
+
+volumes:
+  redroid-data:
+    driver: local
+  adb-keys:
+    driver: local
+
+networks:
+  android-net:
+    driver: bridge
