@@ -1,10 +1,11 @@
-ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/universal
+ARG BASE_IMAGE=ubuntu:22.04
 FROM ${BASE_IMAGE}
 
 # OS packages.
 RUN rm -f /etc/apt/sources.list.d/yarn.list || true
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends \
+        ca-certificates \
         wget \
         curl \
         sed \
@@ -19,19 +20,27 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         python3
 
 # GitHub CLI
-RUN sudo mkdir -p -m 755 /etc/apt/keyrings \
+RUN mkdir -p -m 755 /etc/apt/keyrings \
     && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
-    && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-       | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
-    && sudo apt update -y \
-    && sudo apt install gh -y
+       | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt update -y \
+    && apt install gh -y
 
 # Java 21
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get -y install --no-install-recommends openjdk-21-jdk
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+# Set JAVA_HOME dynamically based on architecture
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then \
+        echo "export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64" >> /etc/profile.d/java.sh; \
+    else \
+        echo "export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> /etc/profile.d/java.sh; \
+    fi && \
+    echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/profile.d/java.sh
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Android SDK + adb + build tools
@@ -71,10 +80,18 @@ RUN wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-
     && rm /tmp/gradle.zip \
     && gradle --version
 
+# Install NVM and Node.js 24 (must come before PM2)
+ENV NVM_DIR=/root/.nvm
+ENV NODE_VERSION=24
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install ${NODE_VERSION} \
+    && nvm use ${NODE_VERSION} \
+    && nvm alias default ${NODE_VERSION}
+ENV PATH="$NVM_DIR/versions/node/v${NODE_VERSION}.*/bin:${PATH}"
+
 # PM2
-RUN npm install -g pm2 && \
-    ln -sf /usr/local/node/bin/pm2 /usr/local/bin/pm2 && \
-    pm2 --version
+RUN bash -c "source $NVM_DIR/nvm.sh && npm install -g pm2 && pm2 --version"
 
 # install Gitleaks (supports x64 and arm64)
 RUN ARCH=$(dpkg --print-architecture) && \
@@ -103,14 +120,14 @@ RUN export CONFIGURE=false && \
     curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash
 
 
-# ws-scrcpy (NOW USING NODE 24 with your customized fork!)
-RUN bash -c "source /usr/local/share/nvm/nvm.sh \
-    && nvm install 24 \
+# Clone ws-scrcpy repo and build (customizations are on master branch)
+RUN export NVM_DIR=/root/.nvm \
+    && . "$NVM_DIR/nvm.sh" \
     && nvm use 24 \
     && git clone https://github.com/fayekelmith/ws-scrcpy /opt/ws-scrcpy \
     && cd /opt/ws-scrcpy \
-    && git checkout feat/customize-browser \
+    && git checkout master \
     && npm install \
-    && npm run dist"
+    && npm run dist
 
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
